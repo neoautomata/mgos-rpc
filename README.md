@@ -1,1 +1,1 @@
-# mgos-util
+# mgos-rpc
