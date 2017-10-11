@@ -26,9 +26,10 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
+	client "github.com/eclipse/paho.mqtt.golang"
 	"github.com/neoautomata/mgos-rpc/node"
-	"github.com/yosssi/gmq/mqtt/client"
 )
 
 const (
@@ -41,14 +42,14 @@ type mqttNode struct {
 
 	name     string // human-readable name
 	deviceID string
-	conn     *client.Client
+	conn     client.Client
 	id       int
 	rchan    chan []byte
 	src      string
 }
 
 // New creates a new connection to a Mongoose OS node via wesocket.
-func New(name, deviceID string, conn *client.Client) (node.Node, error) {
+func New(name, deviceID string, conn client.Client) (node.Node, error) {
 	if name == "" {
 		return nil, errors.New("name is required")
 	}
@@ -71,36 +72,31 @@ func New(name, deviceID string, conn *client.Client) (node.Node, error) {
 	n.src = fmt.Sprintf("%s-%x", srcBase, b)
 
 	// Subscribe to receive responses.
-	sOpts := &client.SubscribeOptions{
-		SubReqs: []*client.SubReq{
-			{
-				TopicFilter: []byte(fmt.Sprintf("%s/rpc", n.src)),
-				QoS:         2, // exactly once
-				Handler:     n.recv,
-			},
-		},
+	st := conn.Subscribe(fmt.Sprintf("%s/rpc", n.src), 2 /* Exactly Once */, n.recv)
+	if ok := st.WaitTimeout(30 * time.Second); !ok {
+		return nil, errors.New("Timeout waiting for subscription.")
 	}
-	if err := n.conn.Subscribe(sOpts); err != nil {
-		return nil, err
+	if st.Error() != nil {
+		return nil, st.Error()
 	}
 
 	return n, nil
 }
 
-func (n *mqttNode) recv(topicName, message []byte) {
+func (n *mqttNode) recv(c client.Client, msg client.Message) {
 	type resp struct {
 		ID       int
 		Src, Dst string
 	}
 
 	r := new(resp)
-	if err := json.Unmarshal(message, r); err != nil {
+	if err := json.Unmarshal(msg.Payload(), r); err != nil {
 		log.Printf("WARN: failed parsing MQTT message: %v", err)
 	}
 	if r.Dst == n.src && r.Src == n.deviceID && r.ID == n.id-1 {
-		n.rchan <- message
+		n.rchan <- msg.Payload()
 	} else {
-		log.Printf("WARN: Ignoring MQTT message: %s", string(message))
+		log.Printf("WARN: Ignoring MQTT message: %s", string(msg.Payload()))
 	}
 }
 
@@ -124,13 +120,13 @@ func (n *mqttNode) RPC(method string, argMap map[string]string) (string, error) 
 		method, args, n.src, n.id))
 	n.id++
 
-	pOpts := &client.PublishOptions{
-		QoS:       2, // exactly once
-		TopicName: []byte(fmt.Sprintf("%s/rpc", n.deviceID)),
-		Message:   req,
+	pt := n.conn.Publish(fmt.Sprintf("%s/rpc", n.deviceID), 2 /* Eactly Once */, false /* not retained */, req)
+	if ok := pt.WaitTimeout(30 * time.Second); !ok {
+		return "", errors.New("Timeout waiting for publish")
 	}
-	if err := n.conn.Publish(pOpts); err != nil {
-		return "", fmt.Errorf("publish to %q failed: %v", n.name, err)
+	if pt.Error() != nil {
+		return "", fmt.Errorf("publish to %q failed: %v", n.name, pt.Error())
 	}
+
 	return string(<-n.rchan), nil
 }

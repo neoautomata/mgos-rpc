@@ -37,9 +37,10 @@ import (
 	"log"
 	"net/url"
 	"strings"
+	"time"
 
+	client "github.com/eclipse/paho.mqtt.golang"
 	"github.com/neoautomata/mgos-rpc/node/mqtt"
-	"github.com/yosssi/gmq/mqtt/client"
 )
 
 var (
@@ -89,26 +90,27 @@ func main() {
 	if u.Fragment == "" {
 		log.Fatalf("Address %q does not include a device id as a URL fragment", *address)
 	}
+	fmt.Printf("%s://%s\n", u.Scheme, u.Host)
 
-	mqttConn := client.New(&client.Options{
-		ErrorHandler: func(err error) { log.Printf("MQTT Error: %v", err) },
-	})
-
-	connOpts := &client.ConnectOptions{
-		Network:      u.Scheme,
-		Address:      u.Host,
-		CleanSession: true,
-	}
+	co := client.NewClientOptions()
+	co.AddBroker(fmt.Sprintf("%s://%s", u.Scheme, u.Host))
 
 	if u.User != nil {
-		connOpts.UserName = []byte(u.User.Username())
+		co.SetUsername(u.User.Username())
 		if pass, ok := u.User.Password(); ok {
-			connOpts.Password = []byte(pass)
+			co.SetPassword(pass)
 		}
 	}
 
-	if err := mqttConn.Connect(connOpts); err != nil {
-		log.Fatalf("Failed connecting to MQTT: %v", err)
+	co.SetConnectTimeout(30 * time.Second)
+	mqttConn := client.NewClient(co)
+
+	ct := mqttConn.Connect()
+	if ok := ct.WaitTimeout(30 * time.Second); !ok {
+		log.Fatal("Timed out waiting for MQTT connection")
+	}
+	if ct.Error() != nil {
+		log.Fatal(ct.Error())
 	}
 
 	n, err := mqtt.New(u.Fragment, u.Fragment, mqttConn)
