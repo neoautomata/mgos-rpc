@@ -90,7 +90,6 @@ func main() {
 	if u.Fragment == "" {
 		log.Fatalf("Address %q does not include a device id as a URL fragment", *address)
 	}
-	fmt.Printf("%s://%s\n", u.Scheme, u.Host)
 
 	co := client.NewClientOptions()
 	co.AddBroker(fmt.Sprintf("%s://%s", u.Scheme, u.Host))
